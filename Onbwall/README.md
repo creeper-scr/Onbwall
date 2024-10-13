@@ -1,4 +1,4 @@
-# Onbwall
+# ONBwall
 
 ## How to start
 

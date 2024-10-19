@@ -27,6 +27,50 @@ config = get_plugin_config(Config)
 
 contributer = on_command("test", rule=to_me(), priority=5)
 
+@contributer.handle()
+async def handle():
+    
+    @waiter(waits=["message"], keep_session=True)
+    async def get_content(event: PrivateMessageEvent):
+        return event.get_message(), event.get_session_id()  # 返回消息和 sessionID
+    
+    timestamp = int(time.time())
+    directory = "submissions"  # 替换为你的目标目录
+    file_name = f"{timestamp}_raw.json"
+    file_path = os.path.join(directory, file_name)  # 合并目录和文件名
+
+    # 确保目录存在，如果不存在则创建
+    os.makedirs(directory, exist_ok=True)
+
+    messages_list = []  # 用于存储消息和 sessionID 的列表
+
+    # 在获取消息的上下文外打开文件，以保持文件打开状态
+    try:
+        async for resp in get_content(timeout=10, retry=200, prompt=""):
+            if resp is None:
+                await contributer.send("等待超时")
+                break
+            
+            message, sessionID = resp  # 解包消息和 sessionID
+
+            # 将新消息和 sessionID 添加到字典中
+            messages_list.append({"message": str(message), "sessionID": str(sessionID)})
+
+    except Exception as e:
+        await contributer.send(f"发生错误: {str(e)}")  # 错误处理
+        return
+    if not messages_list:
+        os.remove(file_path)  # 删除空的 JSON 文件
+        await contributer.send("未收到稿件")
+    else:
+        # 写入 JSON 文件
+        with open(file_path, "w", encoding="utf-8") as file:  # 以写入模式打开文件
+            json.dump(messages_list, file, ensure_ascii=False, indent=4)  # 转换为 JSON 格式并写入文件
+
+        await contributer.send(f"消息已保存到 {file_path}")  # 可选：告知用户文件已保存
+        await gotohtml(file_path)
+        await gotojpg(file_path)
+
 async def gotohtml(file_path):
     html_file_path = f"{file_path.replace('_raw.json', '.html')}"
     if not os.path.exists(file_path):
@@ -326,51 +370,3 @@ def download_image(url, output_path):
     #else:
         #print(f"下载图片失败: {url}")
     print("download"f"{url}""to" f"{output_path}")
-
-@contributer.handle()
-async def handle():
-    
-    @waiter(waits=["message"], keep_session=True)
-    async def get_content(event: PrivateMessageEvent):
-        return event.get_message(), event.get_session_id()  # 返回消息和 sessionID
-    
-    timestamp = int(time.time())
-    directory = "submissions"  # 替换为你的目标目录
-    file_name = f"{timestamp}_raw.json"
-    file_path = os.path.join(directory, file_name)  # 合并目录和文件名
-
-    # 确保目录存在，如果不存在则创建
-    os.makedirs(directory, exist_ok=True)
-
-    # 在获取消息的上下文外打开文件，以保持文件打开状态
-    with open(file_path, "a", encoding="utf-8") as file:
-        file.write("[\n")
-
-        first_message = True  # 用于跟踪是否是第一条消息
-        async for resp in get_content(timeout=10, retry=200, prompt=""):
-            if resp is None:
-                await contributer.send("等待超时")
-                break
-            
-            message, sessionID = resp  # 解包消息和 sessionID
-
-            # 如果不是第一条消息，前面添加逗号
-            if not first_message:
-                file.write(",\n")
-            else:
-                first_message = False
-
-            # 将新消息包装为 JSON 对象并写入文件
-            json.dump({"message": str(message)}, file, ensure_ascii=False)
-
-        # 写入 sessionID，确保前面有逗号
-        if sessionID:  # 检查 sessionID 是否存在
-            if not first_message:  # 如果已经写入过消息
-                file.write(",\n")
-            json.dump({"sessionID": str(sessionID)}, file, ensure_ascii=False)
-
-        file.write("\n]")  # 写入结尾的右方括号
-
-    await contributer.send(f"消息已保存到 {file_path}")  # 可选：告知用户文件已保存
-    await gotohtml(file_path)
-    await gotojpg(file_path)

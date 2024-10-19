@@ -9,10 +9,8 @@ import json
 import time
 import os
 import re
-import subprocess
-import shutil
-import sqlite3
-import requests
+import pdfkit
+import fitz
 
 from .config import Config
 
@@ -68,8 +66,8 @@ async def handle():
             json.dump(messages_list, file, ensure_ascii=False, indent=4)  # 转换为 JSON 格式并写入文件
 
         await contributer.send(f"消息已保存到 {file_path}")  # 可选：告知用户文件已保存
-        await gotohtml(file_path)
-        await gotojpg(file_path)
+        html_path = await gotohtml(file_path)
+        await gotojpg(html_path, timestamp)
 
 async def gotohtml(file_path):
     html_file_path = f"{file_path.replace('_raw.json', '.html')}"
@@ -264,109 +262,40 @@ async def gotohtml(file_path):
             html_file.write(html_content)
     except Exception as e:
         return "生成 HTML 失败：写入文件错误。"
-        print("生成 HTML 失败：写入文件错误。")
     # 可选：将 HTML 文件路径返回或发送给用户
-    return f"HTML 文件已生成：{html_file_path}"
-    print(f"HTML 文件已生成：{html_file_path}")
-
-async def gotojpg(file_path):
-    """
-    使用 Chrome 打印 HTML 到 PDF 并将 PDF 转换为 JPG，然后下载 JSON 中的所有图片到同一个文件夹。
-    参数:
-        file_name (str): JSON 文件的文件名，用于定位相关文件
-    """
-    # 文件夹和文件名的设置
-    input_name = os.path.splitext(os.path.basename(file_path))[0]
-    html_file_path = f"{file_path.replace('_raw.json', '.html')}"
-    pdf_output_path = f"{file_path.replace('_raw.json', '.pdf')}"
-    jpg_folder = f"{file_path.replace('_raw.json', '-img')}"
-    json_file_path = file_path
-    # 确保必要的目录存在
-    os.makedirs(os.path.dirname(pdf_output_path), exist_ok=True)
-    os.makedirs(jpg_folder, exist_ok=True)
-
-    # 使用 Chrome 打印 HTML 到 PDF
-    chrome_command = [
-        "google-chrome-stable",
-        "--headless",
-        f"--print-to-pdf={pdf_output_path}",
-        "--run-all-compositor-stages-before-draw",
-        "--no-pdf-header-footer",
-        "--virtual-time-budget=2000",
-        "--pdf-page-orientation=portrait",
-        "--no-margins",
-        "--enable-background-graphics",
-        "--print-background=true",
-        f"file://{os.path.abspath(html_file_path)}"
-    ]
-
-    # 执行 Chrome 打印命令
-    subprocess.run(chrome_command, check=True)
-
-    # 使用 ImageMagick 将 PDF 转换为 JPG
-    convert_command = [
-        "identify",
-        "-format", "%n\n",
-        pdf_output_path
-    ]
-
-    # 获取 PDF 的页数
-    pages = subprocess.check_output(convert_command).decode("utf-8").strip().split("\n")[0]
-
-    # 转换每一页 PDF 为 JPG
-    for i in range(int(pages)):
-        formatted_index = f"{i:02d}"
-        convert_page_command = [
-            "convert",
-            "-density", "360",
-            "-quality", "90",
-            f"{pdf_output_path}[{i}]",
-            f"{jpg_folder}/{input_name}-{formatted_index}.jpeg"
-        ]
-        subprocess.run(convert_page_command, check=True)
-
-    # 下载 JSON 中的所有图片
-    next_file_index = len(os.listdir(jpg_folder))
-    with open(json_file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        for item in data:
-            if "message" in item:
-                msg = item["message"]
-                # 查找所有 CQ:image 码
-                cq_images = re.findall(r'\[CQ:image,([^\]]+)\]', msg)
-                for cq_data in cq_images:
-                    data_dict = {}
-                    # 解析 CQ 码中的数据
-                    for kv in cq_data.split(','):
-                        if '=' in kv:
-                            k, v = kv.split('=', 1)
-                            data_dict[k] = v
-                    img_url = data_dict.get("url", "")
-                    if img_url:
-                        formatted_index = f"{next_file_index:02d}"
-                        image_output_path = f"{jpg_folder}/{input_name}-{formatted_index}.jpeg"
-                        download_image(img_url, image_output_path)
-                        next_file_index += 1
-
-    # 重命名文件，去掉后缀名
-    for file in os.listdir(jpg_folder):
-        file_path = os.path.join(jpg_folder, file)
-        if os.path.isfile(file_path):
-            base_name = os.path.splitext(file)[0]
-            os.rename(file_path, os.path.join(jpg_folder, base_name))
+    return html_file_path
 
 
-def download_image(url, output_path):
-    """
-    下载图片并保存到指定路径。
-    参数:
-        url (str): 图片的 URL 地址
-        output_path (str): 保存图片的文件路径
-    """
-    #response = requests.get(url, stream=True)
-    #if response.status_code == 200:
-        #with open(output_path, "wb") as f:
-         #   shutil.copyfileobj(response.raw, f)
-    #else:
-        #print(f"下载图片失败: {url}")
-    print("download"f"{url}""to" f"{output_path}")
+async def gotojpg(html_file_path, file_name):
+    if not os.path.exists(html_file_path) or not html_file_path.endswith('.html'):
+        raise ValueError("输入路径不存在或不是一个有效的 HTML 文件")
+        
+    # 创建以 file_name 命名的文件夹
+    output_folder = os.path.join('submissions', str(file_name))
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)  # 如果文件夹不存在，则创建
+
+    path_to_wkhtmltopdf = r"C:/Program Files/wkhtmltopdf/bin/wkhtmltopdf.exe"
+    config = pdfkit.configuration(wkhtmltopdf=path_to_wkhtmltopdf)
+    
+    pdf_file_path = f"{os.path.splitext(html_file_path)[0]}.pdf"
+
+    # 将 HTML 文件转换为 PDF
+    pdfkit.from_file(html_file_path, pdf_file_path, configuration=config)
+    print(f"已将 {html_file_path} 转换为 {pdf_file_path}")
+
+    # 将 PDF 文件转换为 JPEG
+    pdf_document = fitz.open(pdf_file_path)  # 打开 PDF 文件
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)  # 加载页面
+        pix = page.get_pixmap()  # 获取页面的位图
+        jpg_page_path = os.path.join(output_folder, f"{os.path.splitext(os.path.basename(html_file_path))[0]}_page_{page_num + 1}.jpg")
+        pix.save(jpg_page_path)  # 保存为 JPEG 文件
+        print(f"已将 {pdf_file_path} 的第 {page_num + 1} 页转换为 {jpg_page_path}")
+
+    # 删除临时 PDF 文件
+    pdf_document.close()  # 关闭 PDF 文档
+    os.remove(pdf_file_path)
+    print(f"已删除临时 PDF 文件: {pdf_file_path}")
+
+

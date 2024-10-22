@@ -24,7 +24,7 @@ __plugin_meta__ = PluginMetadata(
     config=Config,
 )
 
-#config = get_plugin_config(Config)
+config = get_plugin_config(Config)
 # 获取当前脚本的路径对象
 script_path = Path(__file__).resolve()
 

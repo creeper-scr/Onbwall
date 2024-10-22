@@ -119,78 +119,72 @@ async def handle():
         self_id = "10000"
         #ACgroup = self_id_to_acgroup.get(self_id, 'Unknown')
         ACgroup = "notusenow"
-        try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
 
-            # Check if a record already exists for this sender and receiver
-            cursor.execute('SELECT rawmsg FROM sender WHERE senderid=? AND receiver=?', (user_id, self_id))
-            row = cursor.fetchone()
-            if row:
-                isfirst = "false"
-                # If exists, load the existing rawmsg and append the new message
-                rawmsg_json = row[0]
-                try:
-                    message_list = json.loads(rawmsg_json)
-                    if not isinstance(message_list, list):
-                        message_list = []
-                except json.JSONDecodeError:
-                    message_list = []
+        # Check if a record already exists for this sender and receiver
+        cursor.execute('SELECT rawmsg FROM sender WHERE senderid=? AND receiver=?', (user_id, self_id))
+        row = cursor.fetchone()
+        # Inside the try block where you process and update the sender table
 
-                message_list.append(simplified_data)
-                # Sort messages by time
-                message_list = sorted(message_list, key=lambda x: x.get('time', 0))
-
-                updated_rawmsg = json.dumps(message_list, ensure_ascii=False)
-                cursor.execute('''
-                    UPDATE sender 
-                    SET rawmsg=?, modtime=CURRENT_TIMESTAMP 
-                    WHERE senderid=? AND receiver=?
-                ''', (updated_rawmsg, user_id, self_id))
-            else:
-                isfirst = "true"
-                # If not exists, insert a new record with the message
-                message_list = [simplified_data]
-                rawmsg_json = json.dumps(message_list, ensure_ascii=False)
-                print("startwritingtodb")
-                cursor.execute('''
-                    INSERT INTO sender (senderid, receiver, ACgroup, rawmsg, modtime) 
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (user_id, self_id, ACgroup, rawmsg_json))
-
-                # Check the max tag from the preprocess table
-                cursor.execute('SELECT MAX(tag) FROM preprocess')
-                max_tag = cursor.fetchone()[0] or 0
-                new_tag = max_tag + 1
-
-                # Insert into preprocess table
-                cursor.execute('''
-                    INSERT INTO preprocess (tag, senderid, nickname, receiver, ACgroup) 
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (new_tag, user_id, nickname, self_id, ACgroup))
-
-                # Commit changes
-                conn.commit()
-                print("endwritingtodb")
-                # Call the preprocess.sh script with the new tag
-                #preprocess_script_path = './getmsgserv/preprocess.sh'
-                #try:
-                #    subprocess.run([preprocess_script_path, str(new_tag)], check=True)
-                #except subprocess.CalledProcessError as e:
-                #    print(f"Preprocess script execution failed: {e}")
-
-            conn.commit()
-        except Exception as e:
-            print(f'Error recording private message to database: {e}')
-        if isfirst:
+        if row:  # If the sender already exists in the database
+            isfirst = "false"
+            # If exists, load the existing rawmsg and append the new message
+            rawmsg_json = row[0]
             try:
-                simplified_json = imgrander.process_lite_json(new_tag)
+                message_list = json.loads(rawmsg_json)
+                if not isinstance(message_list, list):
+                    message_list = []
+            except json.JSONDecodeError:
+                message_list = []
 
-                # Step 2: Update `AfterLM` field with the processed JSON
-                cursor.execute('UPDATE preprocess SET AfterLM=? WHERE tag=?', (simplified_json, new_tag))
+            message_list.append(simplified_data)
+            # Sort messages by time
+            message_list = sorted(message_list, key=lambda x: x.get('time', 0))
+
+            updated_rawmsg = json.dumps(message_list, ensure_ascii=False)
+            print(updated_rawmsg)
+            cursor.execute('''
+                UPDATE sender 
+                SET rawmsg=?, modtime=CURRENT_TIMESTAMP 
+                WHERE senderid=? AND receiver=?
+            ''', (updated_rawmsg, user_id, self_id))
+            conn.commit()
+        else:  # If the sender does not exist, create a new record
+            isfirst = "true"
+            # If not exists, insert a new record with the message
+            message_list = [simplified_data]
+            rawmsg_json = json.dumps(message_list, ensure_ascii=False)
+            print("startwritingtodb")
+            cursor.execute('''
+                INSERT INTO sender (senderid, receiver, ACgroup, rawmsg, modtime) 
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (user_id, self_id, ACgroup, rawmsg_json))
+
+            # Check the max tag from the preprocess table
+            cursor.execute('SELECT MAX(tag) FROM preprocess')
+            max_tag = cursor.fetchone()[0] or 0
+            new_tag = max_tag + 1
+
+            # Insert into preprocess table
+            cursor.execute('''
+                INSERT INTO preprocess (tag, senderid, nickname, receiver, ACgroup) 
+                VALUES (?, ?, ?, ?, ?)
+            ''', (new_tag, user_id, nickname, self_id, ACgroup))
+
+            # Commit changes
+            conn.commit()
+            print("endwritingtodb")
+
+        # At this point, only run imgrander.preprocess if it's the first message
+        if isfirst == "true":
+            try:
+                imgrander.preprocess(new_tag)
                 conn.commit()
-                print(f"Processed JSON stored for tag {new_tag}.")
+                print(f"Preprocess done for tag {new_tag}.")
             except Exception as e:
-                        print(f"Error processing JSON for tag {new_tag}: {e}")
+                print(f"Preprocess error for tag {new_tag}: {e}")
+
         conn.close()
+
     await contributer.send("消息处理完毕")

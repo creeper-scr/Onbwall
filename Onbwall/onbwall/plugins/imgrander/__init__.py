@@ -13,6 +13,9 @@ import sqlite3
 import requests
 from jinja2 import Template
 from .config import Config
+from pathlib import Path
+
+db_path = 'submissions/ONBWall.db'
 
 __plugin_meta__ = PluginMetadata(
     name="imgrander",
@@ -21,11 +24,16 @@ __plugin_meta__ = PluginMetadata(
     config=Config,
 )
 
-config = get_plugin_config(Config)
+#config = get_plugin_config(Config)
+# 获取当前脚本的路径对象
+script_path = Path(__file__).resolve()
 
-async def gotohtml(tag):
+# 获取脚本所在的目录
+script_dir = script_path.parent
+
+def gotohtml(tag):
     # Connect to the database
-    conn = sqlite3.connect('cache/OQQWall.db')
+    conn = sqlite3.connect('submissions/ONBWall.db')
     cursor = conn.cursor()
 
     # Fetch AfterLM, senderid, and nickname for the given tag
@@ -46,8 +54,6 @@ async def gotohtml(tag):
     # Anonymize if necessary
     userid_show = userid
     if needpriv:
-        json_data['sender']['user_id'] = 10000
-        json_data['sender']['nickname'] = "匿名"
         nickname = "匿名"
         userid = "10000"
         userid_show = ""
@@ -135,6 +141,15 @@ async def gotohtml(tag):
                 word-break: break-word;
                 max-width: fit-content;
                 line-height: 1.5;
+            }
+            .cqface {
+            vertical-align: middle; 
+            width: 20px!important; 
+            height: 20px!important;
+            margin: 0 0 0 0px!important;
+            display: inline!important;
+            padding:0px!important;
+            transform: translateY(-0.1em);
             }
             .content img, .content video {
                 display: block;
@@ -229,7 +244,7 @@ def process_json(rawmsg, pwd_path):
                 {
                     "type": "text",
                     "data": {
-                        "text": f'<img src="file://{pwd_path}/getmsgserv/LM_work/face/{msg["data"]["id"]}.png"class="cqface">'
+                        "text": f'<img src="file://{script_dir}/face/{msg["data"]["id"]}.png"class="cqface">'
                     }
                 } if msg["type"] == "face" else msg
                 for msg in entry["message"]
@@ -326,3 +341,108 @@ def process_lite_json(tag):
     # Step 7: Output final JSON
     final_json = output_final_json(processed_json, has_irregular_types)
     return(final_json)
+def gotopdf(new_tag):
+    bash_command = f"""google-chrome-stable --headless --disable-gpu \
+    --print-to-pdf=/$(pwd)/cache/pdf/{new_tag}.pdf \
+    --run-all-compositor-stages-before-draw --no-pdf-header-footer --virtual-time-budget=2000 \
+    --pdf-page-orientation=portrait --no-margins --enable-background-graphics --print-background=true \
+    file://$(pwd)/cache/html/{new_tag}.html"""
+    
+    try:
+        subprocess.run(bash_command, shell=True, check=True)
+        print(f"PDF successfully generated at /cache/pdf/{new_tag}.pdf")
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred: {e}")
+import subprocess
+import tempfile
+
+def gotojpg(tag):
+    # Define the bash script
+    print("startgotojpg")
+    bash_script = f"""
+    folder=$(pwd)/submissions/{tag}
+    json_data=$(sqlite3 'submissions/ONBWall.db' "SELECT AfterLM FROM preprocess WHERE tag = '{tag}';")
+    if [[ -z "$json_data" ]]; then
+        echo "No data found for tag {tag}"
+        exit 1
+    fi
+    echo "found data for {tag}"
+    rm -rf $folder
+    mkdir -p "$folder"
+    
+    # Get the number of pages using identify
+    pages=$(identify -format "%n\\n" $(pwd)/cache/pdf/{tag}.pdf | head -n 1)
+    echo "pages:$pages"
+    
+    # Loop through each page
+    for ((i=0; i<$pages; i++)); do
+        formatted_index=$(printf "%02d" $i)
+        convert -density 360 -quality 90 $(pwd)/cache/pdf/{tag}.pdf[$i] $folder/{tag}-$formatted_index.jpeg
+    done
+    
+    existing_files=$(ls "$folder" | wc -l)
+    next_file_index=$existing_files
+    echo "start rename"
+    
+    echo "$json_data" | jq -r '.messages[].message[] | select(.type == "image" and .data.sub_type == 0) | .data.url' | while read -r url; do
+        formatted_index=$(printf "%02d" $next_file_index)
+        
+        # Download file and save it
+        curl -o "$folder/{tag}-$formatted_index.jpg" "$url"
+        
+        # Increment file index
+        next_file_index=$((next_file_index + 1))
+    done
+    
+    cd $folder
+    for file in *.*; do
+        if [ -f "$file" ]; then
+            base_name="${{file%.*}}"
+            mv "$file" "$base_name"
+        fi
+    done
+    """
+
+    print("startgotojpg2")
+
+    # Create a temporary file for the script
+    with tempfile.NamedTemporaryFile("w", delete=False) as script_file:
+        script_file.write(bash_script)
+        script_file_path = script_file.name
+
+    # Execute the temporary bash script
+    try:
+        subprocess.run(f"/bin/bash {script_file_path}", shell=True, check=True)
+        print("gotojpg executed successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred during gotojpg: {e}")
+
+    # Optionally, clean up the temporary file after use
+    finally:
+        try:
+            os.remove(script_file_path)
+        except OSError as cleanup_error:
+            print(f"Temporary script cleanup failed: {cleanup_error}")
+
+def preprocess(new_tag):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    try:
+        simplified_json = process_lite_json(new_tag)
+        # Step 2: Update `AfterLM` field with the processed JSON
+        cursor.execute('UPDATE preprocess SET AfterLM=? WHERE tag=?', (simplified_json, new_tag))
+        print(f"Processed JSON stored for tag {new_tag}.")
+    except Exception as e:
+        print(f"Error processing HTML for tag {new_tag}: {e}")
+    conn.commit()
+    try:
+        output_path = f"./cache/html/{new_tag}.html"
+        with open(output_path, 'w') as file:
+            file.write(gotohtml(new_tag))
+        print(f"Processed HTML success for tag {new_tag}.")
+    except Exception as e:
+        print(f"Error processing HTML for tag {new_tag}: {e}")
+    gotopdf(new_tag)
+    gotojpg(new_tag)
+    conn.commit()
+    conn.close()
